@@ -19,9 +19,11 @@
   - [UsersModule](#usersmodule)
   - [RBACModule](#rbacmodule)
   - [TableAccessModule](#tableaccessmodule)
+  - [AdminModule](#adminmodule)
   - [DatabaseModule](#databasemodule)
 - [Guards](#guards)
 - [Decorators](#decorators)
+- [Admin API Reference](#admin-api-reference)
 - [Entities](#entities)
 - [Database Schema](#database-schema)
 - [Publishing](#publishing)
@@ -76,6 +78,8 @@ npm install @hexakomp/hexbase-ncore \
 
 ### 1. Import in your root `AppModule`
 
+**Basic setup** (auth + guards only):
+
 ```typescript
 import { Module } from '@nestjs/common';
 import { HexbaseNCoreModule } from '@hexakomp/hexbase-ncore';
@@ -86,6 +90,24 @@ import { HexbaseNCoreModule } from '@hexakomp/hexbase-ncore';
       databaseUrl: process.env.DATABASE_URL!,
       jwtSecret:   process.env.JWT_SECRET!,
     }),
+  ],
+})
+export class AppModule {}
+```
+
+**With Admin management endpoints** (`/admin/roles`, `/admin/permissions`, `/admin/table-access`):
+
+```typescript
+import { Module } from '@nestjs/common';
+import { HexbaseNCoreModule, AdminModule } from '@hexakomp/hexbase-ncore';
+
+@Module({
+  imports: [
+    HexbaseNCoreModule.forRoot({
+      databaseUrl: process.env.DATABASE_URL!,
+      jwtSecret:   process.env.JWT_SECRET!,
+    }),
+    AdminModule,  // <-- add this to enable /admin/* endpoints
   ],
 })
 export class AppModule {}
@@ -137,7 +159,32 @@ HexbaseNCoreModule.forRoot({
 
 ---
 
-### Step 2 — Seed a role
+### Step 2 — Import `AdminModule` in your `AppModule`
+
+The `/admin/*` endpoints are **not registered automatically** by `HexbaseNCoreModule`. You must opt in:
+
+```typescript
+import { HexbaseNCoreModule, AdminModule } from '@hexakomp/hexbase-ncore';
+
+@Module({
+  imports: [
+    HexbaseNCoreModule.forRoot({
+      databaseUrl: process.env.DATABASE_URL!,
+      jwtSecret:   process.env.JWT_SECRET!,
+    }),
+    AdminModule,  // <-- required for /admin/* routes
+  ],
+})
+export class AppModule {}
+```
+
+> Without this import, any request to `/admin/*` will return `404 Not Found` regardless of database state or permissions.
+
+Restart the app after making this change.
+
+---
+
+### Step 3 — Seed a role
 
 ```sql
 INSERT INTO roles (name, description)
@@ -148,10 +195,13 @@ RETURNING id;
 
 ---
 
-### Step 3 — Seed permissions
+### Step 4 — Seed permissions
+
+To use the `AdminModule` endpoints, the `admin:manage` permission **must** exist in the database and be linked to the user's role.
 
 ```sql
 INSERT INTO permissions (name, description) VALUES
+  ('admin:manage',   'Full access to Role/Permission/TableAccess management'),
   ('product:read',   'Can list and view products'),
   ('product:create', 'Can create products'),
   ('product:update', 'Can update products'),
@@ -160,18 +210,18 @@ INSERT INTO permissions (name, description) VALUES
 
 ---
 
-### Step 4 — Link permissions to the role
+### Step 5 — Link permissions to the role
 
 ```sql
 -- Replace 1 with your actual role id if different
 INSERT INTO role_permissions (role_id, permission_id)
 SELECT 1, id FROM permissions
-WHERE name IN ('product:read','product:create','product:update','product:delete');
+WHERE name IN ('admin:manage', 'product:read','product:create','product:update','product:delete');
 ```
 
 ---
 
-### Step 5 — Grant table-level CRUD access to the role
+### Step 6 — Grant table-level CRUD access to the role
 
 ```sql
 INSERT INTO table_access (role_id, table_name, can_create, can_read, can_update, can_delete)
@@ -180,7 +230,7 @@ VALUES (1, 'products', true, true, true, true);
 
 ---
 
-### Step 6 — Create a user and assign the role
+### Step 7 — Create a user and assign the role
 
 ```bash
 curl -X POST http://localhost:3000/test/users \
@@ -204,7 +254,7 @@ Expected response:
 
 ---
 
-### Step 7 — Login to obtain a JWT
+### Step 8 — Login to obtain a JWT
 
 ```bash
 curl -X POST http://localhost:3000/auth/login \
@@ -226,7 +276,7 @@ TOKEN="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
 
 ---
 
-### Step 8 — Call a guarded route
+### Step 9 — Call a guarded route
 
 ```bash
 # GET — requires product:read permission + can_read on 'products' table
@@ -250,7 +300,67 @@ curl -X POST http://localhost:3000/test/products \
 
 ---
 
-### Step 9 — Verify guard rejections
+### Step 10 — Call the Admin API
+
+```bash
+# List all permissions — requires admin:manage
+curl http://localhost:3000/admin/permissions \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+Expected response:
+```json
+[
+  { "id": 1, "name": "admin:manage", "description": "Full access to Role/Permission/TableAccess management" },
+  { "id": 2, "name": "product:read",  "description": "Can list and view products" }
+]
+```
+
+```bash
+# Create a new permission
+curl -X POST http://localhost:3000/admin/permissions \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"crm:contacts:read","description":"Read CRM contacts"}'
+```
+
+```bash
+# List all roles (with their permissions)
+curl http://localhost:3000/admin/roles \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+```bash
+# Create a new role
+curl -X POST http://localhost:3000/admin/roles \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"crm-reader","description":"CRM read-only"}'
+```
+
+```bash
+# Assign permissions 1,2 to role 2
+curl -X POST http://localhost:3000/admin/roles/2/permissions \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"permissionIds":[1,2]}'
+```
+
+```bash
+# Set table-level CRUD flags
+curl -X POST http://localhost:3000/admin/table-access \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"role_id":1,"table_name":"products","can_read":true,"can_create":true}'
+```
+
+> **404 on any `/admin/*` route?** Check that `AdminModule` is imported in your `AppModule` — see Step 2.
+
+> **403 Forbidden?** Check that the logged-in user's role has the `admin:manage` permission linked in `role_permissions`.
+
+---
+
+### Step 11 — Verify guard rejections
 
 **No token → 401 Unauthorized**
 
@@ -377,6 +487,12 @@ HTTP method → CRUD flag mapping:
 findAll() {}
 ```
 
+### AdminModule
+
+Provides the management API. To enable, import `AdminModule` along with `HexbaseNCoreModule.forRoot()` in your `AppModule`.
+
+All endpoints are protected by `JwtAuthGuard` and `RBACGuard`, requiring the user to have the `admin:manage` permission.
+
 ---
 
 ### DatabaseModule
@@ -454,6 +570,84 @@ Parameter decorator that extracts the authenticated `JwtPayload` from the reques
 @Get('me')
 getProfile(@CurrentUser() user: JwtPayload) {
   return { id: user.sub, email: user.email };
+}
+```
+
+---
+
+## Admin API Reference
+
+All Admin endpoints are prefixed with `/admin/*`. Requires `admin:manage` permission on user's role.
+
+### Permissions
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/admin/permissions` | List all permissions |
+| `GET` | `/admin/permissions/:id` | Get individual details |
+| `POST` | `/admin/permissions` | Create a single permission |
+| `POST` | `/admin/permissions/bulk` | Bulk-seeding tool (upserts on conflict) |
+| `DELETE` | `/admin/permissions/:id` | Remove permission |
+
+**Create Permission Body:**
+```json
+{
+  "name": "crm:contacts:read",
+  "description": "Optional text"
+}
+```
+
+**Bulk Create Body:**
+```json
+{
+  "permissions": [
+    { "name": "crm:contacts:read" },
+    { "name": "crm:contacts:create" },
+    { "name": "crm:leads:delete" }
+  ]
+}
+```
+
+---
+
+### Roles
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/admin/roles` | List all roles (with permissions) |
+| `GET` | `/admin/roles/:id` | Get individual details |
+| `POST` | `/admin/roles` | Create role |
+| `PATCH` | `/admin/roles/:id` | Update metadata |
+| `DELETE` | `/admin/roles/:id` | Remove role |
+| `POST` | `/admin/roles/:id/permissions` | Add permission IDs (additive) |
+| `PUT` | `/admin/roles/:id/permissions` | Replace entire permission set |
+| `DELETE` | `/admin/roles/:id/permissions/:permId` | Unlink a permission |
+
+**Add Permissions to Role Body:**
+```json
+{
+  "permissionIds": [1, 2, 3]
+}
+```
+
+---
+
+### Table Access (Row-level flags)
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/admin/table-access` | List all table access records |
+| `GET` | `/admin/table-access?roleId=1` | Filter for a specific role |
+| `POST` | `/admin/table-access` | Upsert flags by role_id + table_name |
+| `PATCH` | `/admin/table-access/:id` | Partial update of flags |
+
+**Upsert Table Access Body:**
+```json
+{
+  "role_id": 1,
+  "table_name": "products",
+  "can_read": true,
+  "can_create": true
 }
 ```
 

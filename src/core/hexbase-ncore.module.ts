@@ -12,6 +12,9 @@ import { TableAccessModule } from '../table-access/table-access.module';
  *
  * Import once at the application root level using `forRoot`.
  *
+ * To enable the Role / Permission / TableAccess management endpoints
+ * (`/admin/*`), also import `AdminModule` in your app:
+ *
  * @example
  * ```typescript
  * @Module({
@@ -20,6 +23,7 @@ import { TableAccessModule } from '../table-access/table-access.module';
  *       databaseUrl: process.env.DATABASE_URL,
  *       jwtSecret: process.env.JWT_SECRET,
  *     }),
+ *     AdminModule, // opt-in: exposes /admin/roles, /admin/permissions endpoints
  *   ],
  * })
  * export class AppModule {}
